@@ -1,0 +1,278 @@
+---
+title: "A6_ATReyn"
+output: html_notebook
+---
+
+### Setup
+
+Importing libraries:
+```{r, echo = F}
+
+library(BiocManager)
+library(genbankr)
+library(Biostrings)
+library(ggplot2)
+library(ggtree)
+library(annotate)
+library(muscle)
+library(reshape2)
+library(rentrez)
+library(ape)
+library(ggpubr)
+
+```
+
+Importing and cleaning data:
+```{r}
+
+# Import data
+dat <- "> Human isolate, unknown sequence
+ATGTCTGATAATGGACCCCAAAATCAGCGAAATGCACCCCGCATTACGTTTGGTGGACCCTCAGATTCAA
+CTGGCAGTAACCAGAATGGAGAACGCAGTGGGGCGCGATCAAAACAACGTCGGCCCCAAGGTTTACCCAA
+TAATACTGCGTCTTGGTTCACCGCTCTCACTCAACATGGCAAGGAAGACCTTAAATTCCCTCGAGGACAA
+GGCGTTCCAATTAACACCAATAGCAGTCCAGATGACCAAATTGGCTACTACCGAAGAGCTACCAGACGAA
+TTCGTGGTGGTGACGGTAAAATGAAAGATCTCAGTCCAAGATGGTATTTCTACTACCTAGGAACTGGGCC
+AGAAGCTGGACTTCCCTATGGTGCTAACAAAGACGGCATCATATGGGTTGCAACTGAGGGAGCCTTGAAT
+ACACCAAAAGATCACATTGGCACCCGCAATCCTGCTAACAATGCTGCAATCGTGCTACAACTTCCTCAAG
+GAACAACATTGCCAAAAGGCTTCTACGCAGAAGGGAGCAGAGGCGGCAGTCAAGCCTCTTCTCGTTCCTC
+ATCACGTAGTCGCAACAGTTCAAGAAATTCAACTCCAGGCAGCAGTAGGGGAACTTCTCCTGCTAGAATG
+GCTGGCAATGGCGGTGATGCTGCTCTTGCTTTGCTGCTGCTTGACAGATTGAACCAGCTTGAGAGCAAAA
+TGTCTGGTAAAGGCCAACAACAACAAGGCCAAACTGTCACTAAGAAATCTGCTGCTGAGGCTTCTAAGAA
+GCCTCGGCAAAAACGTACTGCCACTAAAGCATACAATGTAACACAAGCTTTCGGCAGACGTGGTCCAGAA
+CAAACCCAAGGAAATTTTGGGGACCAGGAACTAATCAGACAAGGAACTGATTACAAACATTGGCCGCAAA
+TTGCACAATTTGCCCCCAGCGCTTCAGCGTTCTTCGGAATGTCGCGCATTGGCATGGAAGTCACACCTTC
+GGGAACGTGGTTGACCTACACAGGTGCCATCAAATTGGATGACAAAGATCCAAATTTCAAAGATCAAGTC
+ATTTTGCTGAATAAGCATATTGACGCATACAAAACATTCCCACCAACAGAGCCTAAAAAGGACAAAAAGA
+AGAAGGCTGATGAAACTCAAGCCTTACCGCAGAGACAGAAGAAACAGCAAACTGTGACTCTTCTTCCTGC
+TGCAGATTTGGATGATTTCTCCAAACAATTGCAACAATCCATGAGCAGTGCTGACTCAACTCAGGCCTAA"
+
+# Tidy data
+
+seq <- gsub("^>.*sequence\\n([ATCG].*)", "\\1", dat)
+seq <- gsub("\\n", "", seq)
+
+```
+\n
+
+### Pairwise Alignments
+
+Finding pairwise alignments between our query search (seq) and hits from NCBI database:
+```{r}
+
+# BLAST search
+seqBLAST <- blastSequences(paste(seq), as = 'data.frame',
+                           hitListSize = 40, timeout = 600)
+
+```
+\n
+
+### Multiple Alignments
+
+Examining hits from blast search:
+```{r}
+
+# Load accession numbers from hits into dataframe object
+seqHitsDF <- data.frame(ID = seqBLAST$Hit_accession, Seq = seqBLAST$Hsp_hseq,
+                     stringsAsFactors = FALSE)
+
+# Preview hit lengths for each hit
+seqBLAST$Hit_len
+
+# Preview species matches
+seqHitSp <- read.GenBank(seqBLAST$Hit_accession)
+attr(seqHitSp, "species")
+
+```
+It appears that all the matches for the human isolate from the patient biofluid sample belong to SARS-COV-2.
+\n
+
+### Aligning Sequences
+
+Prepping data for alignment
+```{r}
+
+# Convert sequences into DNAString object
+seqDNAString <- seqHitsDF$Seq %>% 
+  as.character %>% # Convert to strings
+  lapply(.,paste0, collapse = "") %>% # Convert into single string
+  unlist %>% # Remove list so it becomes a single vector
+  DNAStringSet  # Convert vector to DNAString
+
+# Since each hit belongs to SARS-COV-2, we will create unique names for each sequence so they can be distinguished
+names(seqDNAString) <- paste(1:nrow(seqHitsDF), seqHitsDF$ID, sep = "_")
+
+```
+\n
+
+Create alignment file:
+```{r}
+
+# Run alignment with muscle from muscle package
+seqAlign <- muscle::muscle(stringset = seqDNAString, quiet = T)
+
+```
+\n
+
+### Inspecting Alignment
+
+Examining sequences alignment:
+```{r}
+
+print(seqAlign)
+
+```
+There are not many large gaps in data, so we will not have to remove gaps.
+
+\n
+
+Rerunning alignment to sure that no large gaps are present:
+```{r}
+
+# Rerun alignment
+seqSubAlign <- muscle::muscle(seqDNAString, quiet = T)
+
+# Preview alignment
+print(seqSubAlign)
+
+```
+Looks good!
+
+\n
+
+### Distance Matrix
+
+A distance matrix can be used to determine the evolutionary relationships between sequences.
+
+Setup:
+```{r}
+
+# Since we will be using ape package, need to convert to DNABin
+seqAlignBin <- as.DNAbin(seqAlign)
+
+# Creating distance matrix
+seqDM <- dist.dna(seqAlignBin, model = "K80") # Evolutionary model designated
+class(seqDM) # Verify conversion was successful (class = dist)
+
+# Rearranging matrix to a "linear" matrix
+seqDMMat <- as.matrix(seqDM)
+dim(seqDMMat)
+
+# Using melt to reshape data
+seqMat <- melt(seqDMMat)
+dim(seqMat)
+
+
+```
+\n
+
+Visualizing the matrix:
+```{r}
+
+# Creating tile plot
+fig1 <- ggplot(data = seqMat, aes(x = Var1, y = Var2, fill = value)) + 
+  geom_tile() +
+  scale_fill_gradientn(colours = c("white", "blue", "green", "red")) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+# Print plot
+print(fig1)
+
+```
+\n
+
+### Creating Relationship Trees
+
+Neighbour-joining method:
+```{r}
+
+# Setting up NJ method
+seqTreeNJ <- nj(seqDM)
+str(seqTreeNJ) # Checking that setup was successful
+
+# Creating tree
+timeplot <- ggtree(seqTreeNJ) +
+  geom_tiplab()
+
+print(timeplot)
+
+# Previewing tree without length info to highlight relationships
+notimeplot <- ggtree(seqTreeNJ, branch.length = 'none') +
+  geom_tiplab() +
+  xlim(NA, 50)
+
+print(notimeplot)
+
+# Joining plots
+fig2 <- ggarrange(timeplot, notimeplot,
+                  labels = c("A", "B"),
+                  ncol = 2, nrow = 1)
+fig2
+
+
+```
+\n
+
+### Conclusions
+
+The non-human DNA isolated from the patient's biofluid sample belongs to SARS-COV-2. A BLAST search and subsequent DNA alignment showed a 100% match between the sample and all 40 of its hits (Fig. 1). Additionally, plotting the evolutionary relationships between the sample and its hits produced a phylogeny in which each sample is very closely related, with evolutions occurring over very short timescales (Fig. 2). This evidences that the patient has been in contact with SARS-COV-2, although further testing may be required to determine if a coronavirus infection is responsible for their life-threatening illness. The DNA alignment and phylogeny both show that the SARS-COV-2 variation the patient was exposed to is not a new strain or mutation, as it has a 100% match with other SARS-COV-2 variations that have been sequenced. Although SARS-COV-2 infection is a serious concern, and may be contributing to the patient's decline in health, since it is not a novel mutation regular SARS-COV-2 procedures can be carried out when treating this patient. 
+
+\n
+```{r, echo = F}
+
+print(fig1)
+
+```
+**Fig. 1.** A tile plot illustrating a matrix DNA alignment between the SARS-COV-2 DNA sample taken from the patient's biofliuds and its 40 matches found during a BLAST search. Colour denotes distances between alignments. No differences were found between any samples.
+
+\n
+\n
+
+```{r, echo = F}
+
+print(fig2)
+
+```
+**Fig. 2.** A phylogeny showing the evolutionary relationships between the SARS-COV-2 DNA sample taken from the patient's biofluids and its 40 matches found during a BLAST search. (**A**) All samples are very closely related and occurred over a short timescale. Branch length denotes time. (**B**) The same phylogeny with time relationships removed to highlight evolutionary relationships between samples. The basic, repetitive pattern indicates that the samples are very closely related and indistinguishable (this tree represents only one of many possible evolutionary trees).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
